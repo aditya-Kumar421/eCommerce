@@ -1,62 +1,76 @@
 from rest_framework import serializers
-from .models import Order, OrderItem
-from cart.models import Cart, CartItem
+from .models import Order
+from cart.serializers import CartItemSerializer
+from cart.models import Cart
 from coupons.models import Coupon
-from decimal import Decimal
-class OrderItemSerializer(serializers.ModelSerializer):
-    product = serializers.StringRelatedField(read_only=True)
-
-    class Meta:
-        model = OrderItem
-        fields = ['id', 'product', 'quantity']
+from datetime import datetime
+from bson import Decimal128
 
 
-class OrderSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Order
-        fields = ['id', 'user', 'total_amount', 'discount_applied', 'final_amount', 'status', 'created_at']
-        read_only_fields = ['id', 'user', 'discount_applied', 'final_amount', 'status', 'created_at']
+class OrderSerializer(serializers.Serializer):
+    id = serializers.CharField(source="_id", read_only=True)
+    user_id = serializers.CharField(read_only=True)
+    items = CartItemSerializer(many=True, read_only=True)
+    total_amount = serializers.FloatField(read_only=True)
+    discount_applied = serializers.FloatField(read_only=True)  # Make read-only
+    final_amount = serializers.FloatField(read_only=True)
+    coupon_id = serializers.CharField(allow_null=True, required=False)
+    status = serializers.CharField()
+    created_at = serializers.DateTimeField(read_only=True)
 
-# class OrderSerializer(serializers.ModelSerializer):
-#     coupon_code = serializers.CharField(write_only=True, required=False, allow_null=True)
-#     user = serializers.HiddenField(default=serializers.CurrentUserDefault()) 
+    def validate_status(self, value):
+        valid_statuses = ["pending", "shipped", "delivered"]
+        if value not in valid_statuses:
+            raise serializers.ValidationError(f"Status must be one of {valid_statuses}")
+        return value
 
-#     class Meta:
-#         model = Order
-#         fields = ['id', 'user', 'total_amount', 'discount_applied', 'final_amount', 'coupon_code', 'status', 'created_at']
-#         read_only_fields = ['discount_applied', 'final_amount', 'status', 'created_at']
+    def validate_coupon_id(self, value):
+        if value:
+            coupon = Coupon.get_by_id(value)
+            if not coupon:
+                raise serializers.ValidationError("Invalid coupon ID")
+            if coupon["expiry_date"] < datetime.utcnow():
+                raise serializers.ValidationError("Coupon has expired")
+            if coupon["used_count"] >= coupon["usage_limit"]:
+                raise serializers.ValidationError("Coupon usage limit reached")
+        return value
 
+    def validate(self, data):
+        user_id = self.context["request"].user.get("_id")
+        cart = Cart.get_by_user_id(user_id)
+        if not cart or not cart["items"]:
+            raise serializers.ValidationError("Cart is empty")
         
-#     def create(self, validated_data):
-#         """Handle coupon validation and apply discount"""
-#         request = self.context.get('request')  
-#         if not request:
-#             raise serializers.ValidationError({"error": "Request context missing."})
+        total_amount = cart["total_price"]
+        coupon_id = data.get("coupon_id")
+        discount_applied = 0.0  # Default
         
-#         user = request.user
-#         coupon_code = validated_data.pop('coupon_code', None)
-#         total_amount = validated_data.get('total_amount')
+        if coupon_id:
+            coupon = Coupon.get_by_id(coupon_id)
+            min_order_value = (float(coupon["min_order_value"].to_decimal()) if isinstance(coupon["min_order_value"], Decimal128) 
+                              else coupon["min_order_value"]) if coupon["min_order_value"] is not None else None
+            if min_order_value and total_amount < min_order_value:
+                raise serializers.ValidationError(f"Order value must be at least {min_order_value}")
+            
+            # Calculate discount based on coupon type
+            if coupon["discount_type"] == "percentage":
+                discount_applied = total_amount * (coupon["discount_value"] / 100)
+            else:  # amount
+                discount_applied = min(total_amount, coupon["discount_value"])
+        
+        # Update validated_data with calculated values
+        data["discount_applied"] = discount_applied
+        data["total_amount"] = total_amount
+        data["final_amount"] = total_amount - discount_applied
+        return data
 
-#         discount_applied = 0.0
-#         coupon = None
+    def create(self, validated_data):
+        user_id = self.context["request"].user.get("_id")
+        cart = Cart.get_by_user_id(user_id)
+        coupon_id = validated_data.get("coupon_id")
+        discount_applied = validated_data.get("discount_applied", 0.0)
+        return Order.create(user_id, cart, coupon_id, discount_applied)
 
-#         if coupon_code:
-#             try:
-#                 coupon = Coupon.objects.get(code=coupon_code)
-
-#                 if coupon.is_valid(user, total_amount):  
-#                     discount_applied = coupon.apply_discount(total_amount)
-#                     coupon.used_count += 1
-#                     coupon.save()
-#                 else:
-#                     raise serializers.ValidationError({"error": "Invalid or expired coupon"})
-#             except Coupon.DoesNotExist:
-#                 raise serializers.ValidationError({"error": "Invalid coupon code"})
-
-#         validated_data['user'] = user  
-#         validated_data['discount_applied'] = discount_applied
-#         validated_data['final_amount'] = Decimal(total_amount) - Decimal(discount_applied)
-#         validated_data['coupon'] = coupon
-
-#         return super().create(validated_data)
-
+    def update(self, instance, validated_data):
+        status = validated_data.get("status", instance["status"])
+        return Order.update_status(instance["_id"], status)

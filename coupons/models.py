@@ -1,48 +1,57 @@
-from django.db import models
-from django.contrib.auth import get_user_model
-from django.utils.timezone import now
-from decimal import Decimal
+from pymongo import MongoClient
+from bson import ObjectId, Decimal128
+from django.conf import settings
+from datetime import datetime
 
-User = get_user_model()
+class MongoDBClient:
+    _client = None
+    _db = None
 
-class Coupon(models.Model):
-    CODE_TYPE_CHOICES = [
-        ('fixed', 'Fixed Amount'),
-        ('percent', 'Percentage'),
-    ]
+    @classmethod
+    def get_db(cls):
+        if cls._client is None:
+            cls._client = MongoClient(settings.MONGO_URI)
+            cls._db = cls._client[settings.MONGO_DB_NAME]
+        return cls._db
 
-    code = models.CharField(max_length=50, unique=True)
-    discount_type = models.CharField(max_length=10, choices=CODE_TYPE_CHOICES)
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2)
-    expiry_date = models.DateTimeField()
-    usage_limit = models.PositiveIntegerField(default=1)
-    used_count = models.PositiveIntegerField(default=0)
-    min_order_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    applicable_users = models.ManyToManyField(User, blank=True, help_text="Users who can use this coupon")
+class Coupon:
+    collection = MongoDBClient.get_db().coupons
 
-    def is_valid(self, user, order_total):
-        """Check if coupon is still valid."""
-        if self.expiry_date < now():
-            return False, "Coupon has expired"
-        if self.used_count >= self.usage_limit:
-            return False, "Coupon usage limit reached"
-        if self.min_order_value and order_total < self.min_order_value:
-            return False, f"Minimum order value should be {self.min_order_value}"
-        if self.applicable_users.exists() and user not in self.applicable_users.all():
-            return False, "You are not eligible for this coupon"
-        return True, "Valid coupon"
+    @staticmethod
+    def create(data):
+        coupon = {
+            "_id": str(ObjectId()),
+            "code": data["code"],
+            "discount_type": data["discount_type"],
+            "discount_value": data["discount_value"],
+            "expiry_date": data["expiry_date"],
+            "usage_limit": data["usage_limit"],
+            "used_count": 0,
+            "min_order_value": Decimal128(data["min_order_value"]) if data.get("min_order_value") is not None else None
+        }
+        Coupon.collection.insert_one(coupon)
+        return coupon
 
-    def apply_discount(self, order_total):
-        if not isinstance(order_total, (int, float, Decimal)):  
-            raise ValueError("order_total must be a number")  
+    @staticmethod
+    def get_by_id(coupon_id):
+        return Coupon.collection.find_one({"_id": coupon_id})
 
-        order_total = Decimal(str(order_total))  
+    @staticmethod
+    def get_by_code(code):
+        return Coupon.collection.find_one({"code": code})
 
-        if self.discount_type == 'fixed':
-            return max(order_total - self.discount_value, Decimal('0'))  # Ensure total is not negative
-        elif self.discount_type == 'percent':
-            return max(order_total - (order_total * (self.discount_value / Decimal('100'))), Decimal('0'))
-        return order_total
+    @staticmethod
+    def get_all():
+        return list(Coupon.collection.find())
 
-    def __str__(self):
-        return self.code
+    @staticmethod
+    def update(coupon_id, data):
+        if "min_order_value" in data and data["min_order_value"] is not None:
+            data["min_order_value"] = Decimal128(data["min_order_value"])
+        Coupon.collection.update_one({"_id": coupon_id}, {"$set": data})
+        return Coupon.get_by_id(coupon_id)
+
+    @staticmethod
+    def increment_used_count(coupon_id):
+        Coupon.collection.update_one({"_id": coupon_id}, {"$inc": {"used_count": 1}})
+        return Coupon.get_by_id(coupon_id)

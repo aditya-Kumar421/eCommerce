@@ -1,28 +1,37 @@
 from rest_framework import serializers
-from .models import Cart, CartItem
-from products.models import  Product
+from .models import Cart
 
-class CartItemSerializer(serializers.ModelSerializer):
-    product = serializers.StringRelatedField(read_only=True)
-    product_id = serializers.PrimaryKeyRelatedField(
-        queryset=Product.objects.all(), write_only=True, source="product"
-    )
+class CartItemSerializer(serializers.Serializer):
+    product_id = serializers.CharField(max_length=24)
+    name = serializers.CharField(max_length=200)
+    price = serializers.FloatField()
+    quantity = serializers.IntegerField(min_value=1)
 
-    class Meta:
-        model = CartItem
-        fields = ['id', 'product', 'product_id', 'quantity']
+class CartSerializer(serializers.Serializer):
+    user_id = serializers.CharField()
+    items = CartItemSerializer(many=True)
+    total_items = serializers.IntegerField()
+    total_price = serializers.FloatField()
 
-class CartSerializer(serializers.ModelSerializer):
-    items = CartItemSerializer(many=True, read_only=True)
-    total_items = serializers.SerializerMethodField()
-    total_price = serializers.SerializerMethodField()
+    def create(self, validated_data):
+        user_id = validated_data["user_id"]
+        items = validated_data.get("items", [])
+        total_items = sum(item["quantity"] for item in items)
+        total_price = sum(item["price"] * item["quantity"] for item in items)
+        return Cart.update(user_id, {
+            "user_id": user_id,
+            "items": items,
+            "total_items": total_items,
+            "total_price": total_price
+        })
 
-    class Meta:
-        model = Cart
-        fields = ['id', 'items', 'total_items', 'total_price']
-
-    def get_total_items(self, obj):
-        return obj.total_items()
-
-    def get_total_price(self, obj):
-        return obj.total_price()
+    def update(self, instance, validated_data):
+        user_id = instance["user_id"]
+        items = validated_data.get("items", instance["items"])
+        total_items = sum(item["quantity"] for item in items)
+        total_price = sum(item["price"] * item["quantity"] for item in items)
+        return Cart.update(user_id, {
+            "items": items,
+            "total_items": total_items,
+            "total_price": total_price
+        })

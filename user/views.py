@@ -1,63 +1,79 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, permissions
-from django.contrib.auth import get_user_model
-from rest_framework_simplejwt.tokens import RefreshToken
-from .serializers import RegisterSerializer, LoginSerializer, UserSerializer, LogoutSerializer
-from rest_framework.throttling import ScopedRateThrottle
-User = get_user_model()
+from rest_framework import status
+from .serializers import UserSerializer, LoginSerializer
+from .utils import generate_token
+from pymongo import MongoClient
+from django.conf import settings
+import bcrypt
+db_client = MongoClient(settings.MONGO_URI)
+db = db_client["eCommerce"]  # Replace with your actual DB name
+users_collection = db["users"]
 
 class RegisterView(APIView):
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = 'login'
-
-    permission_classes = [permissions.AllowAny]
-
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+        serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save()
-            refresh = RefreshToken.for_user(user)
+            
+            # Check if user already exists
+            if db.users.find_one({'email': serializer.validated_data['email']}):
+                return Response({'error': 'Email already exists'}, 
+                              status=status.HTTP_400_BAD_REQUEST)
+            
+            # Hash password
+            hashed_password = bcrypt.hashpw(
+                serializer.validated_data['password'].encode('utf-8'),
+                bcrypt.gensalt()
+            )
+            
+            # Create user document
+            user_data = {
+                'username': serializer.validated_data['username'],
+                'email': serializer.validated_data['email'],
+                'password': hashed_password,
+                'role': serializer.validated_data['role']
+            }
+            
+            result = db.users.insert_one(user_data)
+            user_id = str(result.inserted_id)
+            token = generate_token(user_id, user_data['role'])
+            
             return Response({
-                'user': UserSerializer(user).data,
-                'refresh': str(refresh),
-                'access': str(refresh.access_token)
+                'token': token,
+                'user_id': str(result.inserted_id)
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class LoginView(APIView):
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = 'login'
-
-    permission_classes = [permissions.AllowAny]
-
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
-            return Response(serializer.validated_data, status=status.HTTP_200_OK)
+            
+            user = db.users.find_one({'email': serializer.validated_data['email']})
+            if not user:
+                return Response({'error': 'Invalid credentials'}, 
+                              status=status.HTTP_401_UNAUTHORIZED)
+            
+            if not bcrypt.checkpw(
+                serializer.validated_data['password'].encode('utf-8'),
+                user['password']
+            ):
+                return Response({'error': 'Invalid credentials'}, 
+                              status=status.HTTP_401_UNAUTHORIZED)
+            
+            token = generate_token(str(user['_id']), user['role'])
+            return Response({
+                'token': token,
+                'user_id': str(user['_id']),
+                'role': user['role']
+            })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class UserProfileView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
+class ProfileView(APIView):
     def get(self, request):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data)
-
-class LogoutView(APIView):
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = 'login'
-    
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        serializer = LogoutSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                refresh_token = serializer.validated_data['refresh_token']
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-                return Response({"message": "Logout successful"}, status=status.HTTP_205_RESET_CONTENT)
-            except Exception as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        user = request.user
+        return Response({
+            'username': user['username'],
+            'email': user['email'],
+            'role': user['role']
+        })

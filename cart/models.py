@@ -1,24 +1,86 @@
-from django.db import models
+from pymongo import MongoClient
+from bson import ObjectId
 from django.conf import settings
-from products.models import Product
 
-class Cart(models.Model):
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="cart")
-    created_at = models.DateTimeField(auto_now_add=True)
+class MongoDBClient:
+    _client = None
+    _db = None
 
-    def total_items(self):
-        return sum(item.quantity for item in self.items.all())
+    @classmethod
+    def get_db(cls):
+        if cls._client is None:
+            cls._client = MongoClient(settings.MONGO_URI)
+            cls._db = cls._client[settings.MONGO_DB_NAME]
+        return cls._db
 
-    def total_price(self):
-        return sum(item.product.price * item.quantity for item in self.items.all())
+class Cart:
+    collection = MongoDBClient.get_db().carts
 
-    def __str__(self):
-        return f"Cart of {self.user.username}"
+    @staticmethod
+    def get_by_user_id(user_id):
+        return Cart.collection.find_one({"user_id": user_id})
 
-class CartItem(models.Model):
-    cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name="items")
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1)
+    @staticmethod
+    def create(user_id):
+        cart = {
+            "user_id": user_id,
+            "items": [],
+            "total_items": 0,
+            "total_price": 0.0
+        }
+        Cart.collection.insert_one(cart)
+        return cart
 
-    def __str__(self):
-        return f"{self.quantity} of {self.product.name}"
+    @staticmethod
+    def update(user_id, data):
+        Cart.collection.update_one({"user_id": user_id}, {"$set": data}, upsert=True)
+        return Cart.get_by_user_id(user_id)
+
+    @staticmethod
+    def add_item(user_id, item_data):
+        cart = Cart.get_by_user_id(user_id)
+        if not cart:
+            cart = Cart.create(user_id)
+        
+        # Check if item already exists
+        product_id = item_data["product_id"]
+        for item in cart["items"]:
+            if item["product_id"] == product_id:
+                item["quantity"] += item_data["quantity"]
+                break
+        else:
+            cart["items"].append(item_data)
+        
+        # Update totals
+        cart["total_items"] = sum(item["quantity"] for item in cart["items"])
+        cart["total_price"] = sum(item["price"] * item["quantity"] for item in cart["items"])
+        
+        return Cart.update(user_id, {
+            "items": cart["items"],
+            "total_items": cart["total_items"],
+            "total_price": cart["total_price"]
+        })
+
+    @staticmethod
+    def remove_item(user_id, product_id):
+        cart = Cart.get_by_user_id(user_id)
+        if not cart:
+            return None
+        
+        # Remove item
+        cart["items"] = [item for item in cart["items"] if item["product_id"] != product_id]
+        
+        # Update totals
+        cart["total_items"] = sum(item["quantity"] for item in cart["items"])
+        cart["total_price"] = sum(item["price"] * item["quantity"] for item in cart["items"])
+        
+        return Cart.update(user_id, {
+            "items": cart["items"],
+            "total_items": cart["total_items"],
+            "total_price": cart["total_price"]
+        })
+    
+    @staticmethod
+    def clear_cart(user_id):
+        """Empty the cart after an order is placed."""
+        return Cart.update(user_id, {"items": [], "total_items": 0, "total_price": 0.0})

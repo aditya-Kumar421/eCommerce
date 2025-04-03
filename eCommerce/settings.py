@@ -1,8 +1,11 @@
 from pathlib import Path
 from datetime import timedelta
 from decouple import config
-import os
-import ssl
+from pymongo import MongoClient
+
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -58,12 +61,11 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'eCommerce.wsgi.application'
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+
+MONGO_URI = config('MONGO_URI')  # e.g., mongodb://localhost:27017
+MONGO_DB_NAME = "eCommerce" 
+
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -82,7 +84,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'user.utils.JWTAuthentication',
     ),
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.ScopedRateThrottle',
@@ -130,5 +132,15 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-AUTH_USER_MODEL = 'user.User'
+# AUTH_USER_MODEL = 'user.User'
 
+
+cloudinary.config(
+    cloud_name=config('CLOUD_NAME'),
+    api_key=config('API_KEY'),
+    api_secret=config('API_SECRET')
+)
+
+# Django Media Settings
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
