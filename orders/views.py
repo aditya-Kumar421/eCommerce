@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Order
 from .serializers import OrderSerializer
+from .tasks import send_order_status_email
 
 class OrderView(APIView):
     def get(self, request):
@@ -61,8 +62,12 @@ class OrderDetailView(APIView):
         if not order:
             return Response({"error": "Order not found"}, status=status.HTTP_404_NOT_FOUND)
         
-        serializer = OrderSerializer(order, data=request.data, partial=True)
+        # Pass request context to serializer
+        serializer = OrderSerializer(order, data=request.data, partial=True, context={"request": request})
         if serializer.is_valid():
             updated_order = serializer.save()
+            if request.data.get("status") != order["status"]:  # Check if status changed
+                user_email = request.user.get("email")  # Adjust to fetch customer email if needed
+                send_order_status_email.delay(order_id, user_email)
             return Response(OrderSerializer(updated_order).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

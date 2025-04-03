@@ -4,6 +4,8 @@ from rest_framework import status
 from .models import Category, Product
 from .serializers import CategorySerializer, ProductSerializer
 from bson import ObjectId
+from .redis_client import redis_client
+import json
 
 def check_admin_role(request):
     """Custom function to check if user is authenticated and has admin role"""
@@ -70,9 +72,24 @@ class CategoryDetailView(APIView):
 
 class ProductListView(APIView):
     def get(self, request):
+        # Define cache key for all products
+        cache_key = "products:all"
+        cached_data = redis_client.get(cache_key)
+        
+        if cached_data:
+            # Return cached data if available
+            # print("Cache hit for products")
+            return Response(json.loads(cached_data))
+        
+        # Fetch from MongoDB if not in cache
+        # print("Cache miss for products")
         products = Product.get_all()
         serializer = ProductSerializer(products, many=True)
-        return Response(serializer.data)
+        data = serializer.data
+        
+        # Store in cache with a TTL (e.g., 1 hour = 3600 seconds)
+        redis_client.setex(cache_key, 3600, json.dumps(data))
+        return Response(data)
     
     def post(self, request):
         if not check_admin_role(request):
@@ -84,16 +101,31 @@ class ProductListView(APIView):
         serializer = ProductSerializer(data=request.data)
         if serializer.is_valid():
             product_id = serializer.save()
+            # Invalidate the product list cache
+            redis_client.delete("products:all")
             return Response({'id': str(product_id)}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ProductDetailView(APIView):
     def get(self, request, product_id):
+        # Define cache key for specific product
+        cache_key = f"product:{product_id}"
+        cached_data = redis_client.get(cache_key)
+        
+        if cached_data:
+            # Return cached data if available
+            return Response(json.loads(cached_data))
+        
+        # Fetch from MongoDB if not in cache
         product = Product.get_by_id(product_id)
         if not product:
             return Response(status=status.HTTP_404_NOT_FOUND)
         serializer = ProductSerializer(product)
-        return Response(serializer.data)
+        data = serializer.data
+        
+        # Store in cache with a TTL (e.g., 1 hour = 3600 seconds)
+        redis_client.setex(cache_key, 3600, json.dumps(data))
+        return Response(data)
     
     def put(self, request, product_id):
         if not check_admin_role(request):
@@ -108,9 +140,14 @@ class ProductDetailView(APIView):
         
         serializer = ProductSerializer(product, data=request.data, partial=True)
         if serializer.is_valid():
-            updated_product = serializer.save()  # Ensure save() returns the updated instance
-            serializer = ProductSerializer(updated_product)  # Re-serialize the updated instance
-            return Response(serializer.data)
+            updated_product = serializer.save()
+            serializer = ProductSerializer(updated_product)
+            data = serializer.data
+            
+            # Update cache for this product and invalidate product list cache
+            redis_client.setex(f"product:{product_id}", 3600, json.dumps(data))
+            redis_client.delete("products:all")
+            return Response(data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     def delete(self, request, product_id):
@@ -123,4 +160,8 @@ class ProductDetailView(APIView):
         result = Product.delete(product_id)
         if result == 0:
             return Response(status=status.HTTP_404_NOT_FOUND)
+        
+        # Remove from cache and invalidate product list cache
+        redis_client.delete(f"product:{product_id}")
+        redis_client.delete("products:all")
         return Response(status=status.HTTP_204_NO_CONTENT)

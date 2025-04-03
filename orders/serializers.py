@@ -5,7 +5,7 @@ from cart.models import Cart
 from coupons.models import Coupon
 from datetime import datetime
 from bson import Decimal128
-
+from .tasks import send_order_status_email
 
 class OrderSerializer(serializers.Serializer):
     id = serializers.CharField(source="_id", read_only=True)
@@ -74,3 +74,4 @@ class OrderSerializer(serializers.Serializer):
     def update(self, instance, validated_data):
         status = validated_data.get("status", instance["status"])
         return Order.update_status(instance["_id"], status)
+

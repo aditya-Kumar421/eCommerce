@@ -1,11 +1,7 @@
 from pathlib import Path
 from datetime import timedelta
 from decouple import config
-from pymongo import MongoClient
-
 import cloudinary
-import cloudinary.uploader
-import cloudinary.api
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -124,6 +120,17 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD =config('EMAIL_HOST_PASSWORD')  # Use an App Password, not your Gmail password
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+UPSTASH_REDIS_URL = config('UPSTASH_REDIS_URL')
+UPSTASH_REDIS_TOKEN = config('UPSTASH_REDIS_REST_TOKEN')
+
+CELERY_BROKER_URL = config('UPSTASH_REDIS_URL_CELERY')
+CELERY_RESULT_BACKEND = config('UPSTASH_REDIS_URL_CELERY')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'  
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
